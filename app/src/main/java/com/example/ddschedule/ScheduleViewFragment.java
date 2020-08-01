@@ -9,8 +9,9 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.coordinatorlayout.widget.CoordinatorLayout;
 import androidx.fragment.app.Fragment;
+import androidx.lifecycle.Observer;
+import androidx.lifecycle.ViewModelProvider;
 import androidx.recyclerview.widget.GridLayoutManager;
-import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
@@ -19,17 +20,16 @@ import android.os.Looper;
 import android.os.Message;
 import android.util.Log;
 import android.view.LayoutInflater;
-import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.Toast;
 
 import com.chad.library.adapter.base.BaseQuickAdapter;
 import com.chad.library.adapter.base.listener.OnItemClickListener;
 import com.example.ddschedule.model.ScheduleHeader;
 import com.example.ddschedule.model.ScheduleModel;
 import com.example.ddschedule.network.NetworkRequest;
+import com.example.ddschedule.util.DateUtil;
 import com.example.ddschedule.util.HeaderUtil;
 import com.example.ddschedule.util.ListDataUtil;
 import com.example.ddschedule.util.SharedPreferencesUtil;
@@ -51,8 +51,11 @@ public class ScheduleViewFragment extends Fragment implements NetworkRequest.Net
 
     private ScheduleViewAdapter mScheduleViewAdapter;
 
-    //private List<ScheduleModel> mList = new ArrayList<>();
-    private List<ScheduleHeader> mList = new ArrayList<>();
+    private List<ScheduleModel> mModels = new ArrayList<>();
+    private List<ScheduleHeader> mHeaders = new ArrayList<>();
+    private List<String> mSelectedGroupIDs = new ArrayList<>();
+
+    private ScheduleViewModel mScheduleViewModel;
 
     //创建 Handler对象，并关联主线程消息队列
     public Handler mHandler = new Handler(Looper.getMainLooper()) {
@@ -60,9 +63,9 @@ public class ScheduleViewFragment extends Fragment implements NetworkRequest.Net
         public void handleMessage(@NotNull Message msg) {
             super.handleMessage(msg);
             if (msg.what==1){
-                // mlist=(ArrayList<NewsData.DataBean>) newsData.getData();
-                mList= HeaderUtil.addHeader((List<ScheduleModel>) msg.obj);
-                mScheduleViewAdapter.setNewInstance(mList);
+                //List<ScheduleModel> sm = (List<ScheduleModel>)msg.obj;
+                //mScheduleViewAdapter.setList(mList);
+                mScheduleViewModel.insertSchedules((List<ScheduleModel>)msg.obj);
             }
         }
     };
@@ -92,7 +95,7 @@ public class ScheduleViewFragment extends Fragment implements NetworkRequest.Net
                 if(!swipeRefreshLayout.isRefreshing()){
                     swipeRefreshLayout.setRefreshing(true);
                 }
-                initData();
+                requestData(mSelectedGroupIDs);
             }
         });
 
@@ -100,9 +103,9 @@ public class ScheduleViewFragment extends Fragment implements NetworkRequest.Net
         if (view instanceof SwipeRefreshLayout) {
             Context context = view.getContext();
             RecyclerView recyclerView = (RecyclerView) view.findViewById(R.id.list);
-            initData();
+            requestData(mSelectedGroupIDs);
             recyclerView.setLayoutManager(new GridLayoutManager(context, SPAN_COUNT));
-            mScheduleViewAdapter = new ScheduleViewAdapter(context, mList);
+            mScheduleViewAdapter = new ScheduleViewAdapter(context, mHeaders);
             recyclerView.setAdapter(mScheduleViewAdapter);
 
             // 设置点击事件
@@ -110,19 +113,42 @@ public class ScheduleViewFragment extends Fragment implements NetworkRequest.Net
                 @Override
                 public void onItemClick(@NonNull BaseQuickAdapter adapter, @NonNull View view, int position) {
                     //Toast.makeText(getContext(), "Clicked "+position, Toast.LENGTH_SHORT).show();
-                    if (!mList.get(position).isHeader()){
-                        Uri uri = Uri.parse("https://www.youtube.com/watch?v="+((ScheduleModel)mList.get(position).getObject()).getVideo_id());
+                    if (!mHeaders.get(position).isHeader()){
+                        Uri uri = Uri.parse("https://www.youtube.com/watch?v="+((ScheduleModel)mHeaders.get(position).getObject()).getVideo_id());
                         Intent intent = new Intent(Intent.ACTION_VIEW, uri);
                         startActivity(intent);
                     }
                 }
             });
+
+            mScheduleViewModel = new ViewModelProvider(this).get(ScheduleViewModel.class);
+
+            mScheduleViewModel.getSelectedGroupIDs().observe(getViewLifecycleOwner(), new Observer<List<String>>() {
+                @Override
+                public void onChanged(List<String> strings) {
+                    mSelectedGroupIDs = strings;
+                    requestData(mSelectedGroupIDs);
+
+                    //Low performance, get nonnull mSelectedGroupIDs
+                    mScheduleViewModel.getSchedules(mSelectedGroupIDs).observe(getViewLifecycleOwner(), new Observer<List<ScheduleModel>>() {
+                        @Override
+                        public void onChanged(List<ScheduleModel> scheduleModels) {
+                            mModels = scheduleModels;
+                            mHeaders = HeaderUtil.addHeader(mModels);
+                            mScheduleViewAdapter.setNewInstance(mHeaders);
+                        }
+                    });
+                }
+            });
+
+
         }
         return view;
     }
-    private void initData() {
-        ListDataUtil listDataUtil = new ListDataUtil(getContext());
-        NetworkRequest http=new NetworkRequest(listDataUtil.getDataList());
+    private void requestData(List<String> groups) {
+        //ListDataUtil listDataUtil = new ListDataUtil(getContext());
+        //NetworkRequest http=new NetworkRequest(listDataUtil.getDataList());
+        NetworkRequest http=new NetworkRequest(groups);
         http.postData(this);
         swipeRefreshLayout.setRefreshing(false);
     }
@@ -143,7 +169,7 @@ public class ScheduleViewFragment extends Fragment implements NetworkRequest.Net
     @Override
     public boolean onOptionsItemSelected(@NonNull MenuItem item) {
         if (item.getItemId() == R.id.toolbar_refresh) {
-            initData();
+            requestData(mSelectedGroupIDs);
             //Toast.makeText(getContext(), "Refresh Complete", Toast.LENGTH_SHORT).show();
         } else if (item.getItemId() == R.id.toolbar_edit) {
             Intent intent = new Intent(getContext(),GroupSelectActivity.class);
@@ -152,14 +178,14 @@ public class ScheduleViewFragment extends Fragment implements NetworkRequest.Net
         return super.onOptionsItemSelected(item);
     }
 
-    @Override
-    public void onResume() {
-        super.onResume();
-        Boolean isRefresh = (Boolean) SharedPreferencesUtil.getParam(getContext(), "group_refresh", false);
-        Log.d("TAG", "onResume: "+isRefresh);
-        if (isRefresh) {
-            initData();
-            SharedPreferencesUtil.setParam(getContext(), "group_refresh", false);
-        }
-    }
+//    @Override
+//    public void onResume() {
+//        super.onResume();
+//        Boolean isRefresh = (Boolean) SharedPreferencesUtil.getParam(getContext(), "group_refresh", false);
+//        Log.d("TAG", "onResume: "+isRefresh);
+//        if (isRefresh) {
+//            requestData();
+//            SharedPreferencesUtil.setParam(getContext(), "group_refresh", false);
+//        }
+//    }
 }
